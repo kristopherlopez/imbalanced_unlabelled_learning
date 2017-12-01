@@ -1,0 +1,321 @@
+---
+title: "GridSearch"
+output: html_document
+---
+
+# Table of contents
+
+* [Load Libraries](#libraries)
+* [Load Functions](#functions)
+    + [Scaling Functions](#scaling)
+    + [Classification Function](#classification)
+    + [Evaluation Functions](#evaluation)
+    + [Validation Functions](#validation)
+    + [Wrapper Functions](#wrapper)
+#Load libraries and sources
+```{r}
+options(warn=-1)
+
+library(knitr)
+library(mlbench)
+library(lattice)
+library(ggplot2)
+library(caret)
+library(MASS)
+library(class)
+library(e1071)
+library(cluster)
+library(clValid)
+library(xgboost)
+suppressMessages(library(gplots))
+suppressMessages(library(randomForest))
+suppressMessages(library(gbm))
+suppressMessages(library(combinat))
+suppressMessages(library(glmnet))
+
+options(warn=0)
+```
+
+# Load sources
+```{r}
+source("R/paths.R")
+source("R/prediction.R")
+source("R/selection.R")
+source("R/validation.R")
+source("R/evaluation.R")
+
+```
+
+#Load params
+```{r search-params}
+
+kinase_classes <- c('Akt', 'mTOR')
+feature_sets <- c('temporal', 'relative', 'retained', 'final')
+feature_sets <- c('final')
+ensemble_size <- seq(0, 100, 25)[-1]
+negative_size <- c(1, 1.1, 1.2)
+bmm_threshold <- seq(0, 1, 0.01)
+model_type <- c('svm', 'glm', 'xgb', 'rf')
+svm_kernel <- c('radial')
+svm_cost <- c(0, 0.5, 1, 2)
+glm_family <- c('binomial', 'gaussian')
+glm_alpha <- c(0, 1)
+glm_lambda <- 10^seq(10, -2, length = 100)
+xgb_nrounds <- c(10, 15, 25, 50)
+xgb_depth <- c(2, 3, 4)
+rf_ntree <- c(10, 20, 50, 100)
+rf_nodesize <- c(4, 6, 8)
+estimate_c <- c(TRUE, FALSE)
+
+full_data <- get_dataset()
+full_data <- cbind(full_data, hclust_features)
+features <- get_features(full_data)
+kinases <- kinase_idx(kinase_classes)
+
+```
+
+# Generate probabilities: Model 1 --> Random Forest
+``` {r end-to-end}
+
+prob_df <- full_data[, c('Identifier', 'Seq.Window')]
+
+for(k in c('Akt', 'mTOR')){
+  
+  k_pred <- get_prediction(
+  kinase = k,
+  kinases = kinases,
+  full_dataset = full_data[, features$final],
+  test_idx = 1,
+  ensemble_size = 100,
+  negative_size = floor(length(kinases[[k]][['positive-idx']]) * 1),
+  model_type = 'rf',
+  svm_kernel = NULL,
+  svm_cost = NULL,
+  glm_family = NULL,
+  glm_alpha = NULL,
+  xgb_rounds = NULL,
+  xgb_depth = NULL,
+  rf_ntree = 100,
+  rf_nodesize = 2,
+  estimate_c = FALSE,
+  other_ksr = FALSE
+  )
+  
+  prob_df <- cbind(prob_df, k_pred$prediction_full)
+  
+}
+
+colnames(prob_df) <- c('Identifier', 'Seq.Window', 'Akt_pred', 'mTOR_pred')
+
+write.csv(prob_df, file='probability_results_rf.csv')
+```
+
+# Generate probabilities: Model 2 --> SVM
+``` {r end-to-end}
+
+prob_df <- full_data[, c('Identifier', 'Seq.Window')]
+
+for(k in c('Akt', 'mTOR')){
+  
+  k_pred <- get_prediction(
+  kinase = k,
+  kinases = kinases,
+  full_dataset = full_data[, features$final],
+  test_idx = 1,
+  ensemble_size = 100,
+  negative_size = floor(length(kinases[[k]][['positive-idx']]) * 1),
+  model_type = 'svm',
+  svm_kernel = 'radial',
+  svm_cost = 1,
+  glm_family = NULL,
+  glm_alpha = NULL,
+  xgb_rounds = NULL,
+  xgb_depth = NULL,
+  rf_ntree = NULL,
+  rf_nodesize = NULL,
+  estimate_c = TRUE,
+  other_ksr = FALSE
+  )
+  
+  prob_df <- cbind(prob_df, k_pred$prediction_full)
+  
+}
+
+colnames(prob_df) <- c('Identifier', 'Seq.Window', 'Akt_pred', 'mTOR_pred')
+
+write.csv(prob_df, file='probability_results_svm.csv')
+```
+
+# Generate probabilities: Model 3 --> XGBoost
+``` {r end-to-end}
+
+prob_df <- full_data[, c('Identifier', 'Seq.Window')]
+
+for(k in c('Akt', 'mTOR')){
+  
+  k_pred <- get_prediction(
+  kinase = k,
+  kinases = kinases,
+  full_dataset = full_data[, features$final],
+  test_idx = 1,
+  ensemble_size = 100,
+  negative_size = floor(length(kinases[[k]][['positive-idx']]) * 1),
+  model_type = 'xgb',
+  svm_kernel = NULL,
+  svm_cost = NULL,
+  glm_family = NULL,
+  glm_alpha = NULL,
+  xgb_rounds = 100,
+  xgb_depth = 4,
+  rf_ntree = NULL,
+  rf_nodesize = NULL,
+  estimate_c = FALSE,
+  other_ksr = FALSE
+  )
+  
+  prob_df <- cbind(prob_df, k_pred$prediction_full)
+  
+}
+
+colnames(prob_df) <- c('Identifier', 'Seq.Window', 'Akt_pred', 'mTOR_pred')
+
+write.csv(prob_df, file='probability_results_xgb.csv')
+```
+
+# Generate probabilities: Model 4 --> Logistic Regression (Lasso)
+``` {r end-to-end}
+
+prob_df <- full_data[, c('Identifier', 'Seq.Window')]
+
+for(k in c('Akt', 'mTOR')){
+  
+  k_pred <- get_prediction(
+  kinase = k,
+  kinases = kinases,
+  full_dataset = full_data[, features$temporal],
+  test_idx = 1,
+  ensemble_size = 100,
+  negative_size = floor(length(kinases[[k]][['positive-idx']]) * 1),
+  model_type = 'glm',
+  svm_kernel = NULL,
+  svm_cost = NULL,
+  glm_family = 'binomial',
+  glm_alpha = 1,
+  xgb_rounds = NULL,
+  xgb_depth = NULL,
+  rf_ntree = NULL,
+  rf_nodesize = NULL,
+  estimate_c = TRUE,
+  other_ksr = FALSE
+  )
+  
+  prob_df <- cbind(prob_df, k_pred$prediction_full)
+  
+}
+
+colnames(prob_df) <- c('Identifier', 'Seq.Window', 'Akt_pred', 'mTOR_pred')
+
+write.csv(prob_df, file='probability_results_glm.csv')
+```
+
+# Ensemble voting
+```{r}
+
+get_akt_probs <- function(){
+  print('test')
+}
+
+
+```
+
+# Grid Search
+``` {r}
+
+output_df <- 0
+iter <- 0
+for(f in feature_sets) {
+  data <- full_data[, features[[f]]]
+  for(k in kinase_classes){
+    for(e in ensemble_size){
+      for(n in negative_size){
+        for(ec in estimate_c){
+          for(kt in svm_kernel){
+            for(kc in svm_cost){
+              
+              print(paste(
+                'features: ', f,
+                'kinase: ', k, 
+                'ensembles: ', e, 
+                'negative: ', n, 
+                'estim c:', FALSE,
+                'svm_kernel: ', kt, 
+                'svm_cost: ', kc
+                ))
+              
+              start_time <- Sys.time()
+              
+              p <- LOOCV_KSR_probabilities(
+                kinase = k,
+                kinases = kinases,
+                full_dataset = data,
+                ensemble_size = e,
+                floor(length(kinases[[k]][['positive-idx']]) * n),
+                model_type = 'svm',
+                svm_kernel = kt,
+                svm_cost = kc,
+                glm_family = NULL,
+                glm_alpha = NULL,
+                xgb_rounds = NULL,
+                xgb_depth = NULL,
+                rf_ntree = NULL,
+                rf_nodesize = NULL,
+                estimate_c = ec
+                )
+  
+              run_time <- as.numeric(Sys.time() - start_time)
+  
+              for(b in bmm_threshold){
+                
+                output_list <- list()
+                output_list$bmm_threshold <- b
+                output_list$kinase <- k
+                output_list$model_type <- 'svm'
+                output_list$estimated_c <- ec
+                output_list$svm_kernel <- kt
+                output_list$svm_cost <- kc
+                output_list$glm_family <- NULL
+                output_list$glm_alpha <- NULL
+                output_list$xgb_rounds <- NULL
+                output_list$xgb_depth <- NULL
+                output_list$rf_ntree <- NULL
+                output_list$rf_nodesize <- NULL
+
+                output_bmm <- LOOCV_KSR_thr_bmm(k, kinases, b, data, p)
+                output_bmm$confusion_matrix <- NULL
+                
+                output_list <- c(output_list, output_bmm)
+                output_list$feature_set <- f
+                output_list$ensemble_size <- e
+                output_list$negative_size <- floor(length(kinases[[k]][['positive-idx']]) * n)
+                output_list$runtime <- run_time
+  
+                output_list <- as.data.frame(output_list)
+  
+                if(is.numeric(output_df)) { output_df <- output_list }
+                else { output_df <- rbind(output_df, output_list)}
+  
+              }
+  
+              iter <- iter + 1
+              print(paste('iteration: ',iter, ' run time: ', run_time))
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+write.csv(output_df, file='grid_search_results_svm_final.csv')
+
+```
