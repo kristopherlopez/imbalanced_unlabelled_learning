@@ -1,8 +1,26 @@
-cross_validation <- function(x, y, folds, model){
+
+downsampled_indices <- function(y, maj_class, balance=1){
+
+  y <- as.data.frame(y)
+  
+  minority_size <- length(which(y != maj_class))
+  minority_ix   <- which(y != maj_class)
+  majority_ix   <- which(y == maj_class)
+  
+  y_pool <- y[majority_ix, ]
+
+  downsampled_ix <- sample(1:length(y_pool), size = minority_size * balance, replace = F)
+  
+  new_ix <- c(minority_ix, downsampled_ix)
+
+  return(new_ix)
+}
+
+cross_validation <- function(x, y, folds, model, params){
   
   results_predict <- init_results()
   fold <- createFolds(y, folds)
-  
+
   for(i in 1:folds){
     
     x_train <- as.data.frame(x[-fold[[i]], ])
@@ -10,8 +28,8 @@ cross_validation <- function(x, y, folds, model){
     
     y_train <- y[-fold[[i]]]
     y_test  <- y[fold[[i]]]
-    
-    y_hat <- create_predict(x_train, x_test, y_train, y_test, model)
+
+    y_hat <- create_prediction(x_train, x_test, y_train, y_test, model, params)[['y_hat']]
     results_predict <- evaluate_predict(results_predict, y_test, y_hat)
   }
   
