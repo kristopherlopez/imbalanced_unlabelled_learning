@@ -1,11 +1,11 @@
 
-downsampled_indices <- function(y, maj_class, balance=1){
-
+downsampled_indices <- function(y, majority_class, balance=1){
+  
   y <- as.data.frame(y)
   
-  minority_size <- length(which(y != maj_class))
-  minority_ix   <- which(y != maj_class)
-  majority_ix   <- which(y == maj_class)
+  minority_size <- length(which(y != majority_class))
+  minority_ix   <- which(y != majority_class)
+  majority_ix   <- which(y == majority_class)
   
   y_pool <- y[majority_ix, ]
 
@@ -16,11 +16,21 @@ downsampled_indices <- function(y, maj_class, balance=1){
   return(new_ix)
 }
 
-cross_validation <- function(x, y, folds, model, params){
+loocv_unlabelled_preparation <- function(x, y, unlabelled_class){
+  
+  l_ix  <- which(y != unlablelled_class)
+  ul_ix <- which(y == unlabelled_class)
+  
+  loocv_ix <- sample(1:length(l_ix), size=1)
+  loocv_df <- 
+  
+}
+
+cross_validation <- function(x, y, folds, model, params, labelled_ix=NULL){
   
   results_predict <- init_results()
   fold <- createFolds(y, folds)
-
+  
   for(i in 1:folds){
     
     x_train <- as.data.frame(x[-fold[[i]], ])

@@ -2,36 +2,6 @@
 ### Positive unlabelled ensemble learning ###
 #############################################
 
-library(caret)
-library(randomForest)
-library(glmnet)
-library(xgboost)
-library(e1071)
-
-####################################
-##  Notes from ensemblePrediction ##
-####################################
-
-#Parameters
-    #substrates: vector of labelled substrates
-    #phospho.feature.data: the full dataset containing all substrates and features
-    #ensemble.size: number of base classifiers in the model
-    #size.negative: sample size of unlabelled instances used as 'negative cases' for training base classifiers
-    #kernelType: underlying svm package from e1071 library. Choices: 'radial', 'polynomial', 'linear'.
-
-#Underlying procedure
-    # 1. Define set of positive labelled instances and unlabelled instances as negative
-    # 2. Build an ensemble of r = ensemble.size base classifiers by
-        # 3. Sampling without replacement from the unlabelled 'negative' pool, i.e. 'downweighting'
-        # 4. Training an kernelised svm as a 'base classifier' on balanced training set, using 3-fold cross validation
-        # 5. On the validation set for each base classifier, estimate the value of 'c', for adjustment as part of the
-             #positive unlabelled ensemble learning procedure. This is achieved by assessing probabilities outputted
-             #by the prediction model on known positive cases
-    # 6. Now apply the ensemble of svms with paired correction factors 'c' to the full dataset. Then return:
-        # $prediction: The average adjusted probability of 'positive class' across all ensembles, 
-        #  normalised by the highest probability prediction
-        # $svm_models: the unadjusted svm models for all base classifiers
-
 #################################################################        
 ##  Apply the ensemblePrediction to the feature enhanced data  ##
 #################################################################
@@ -39,19 +9,6 @@ library(e1071)
 #####################################
 ##  Data preparation and cleansing ##
 #####################################
-
-
-# Convert various features to numeric vectors
-# ===========================================
-
-#dat_modified$site <- as.numeric(dat_modified$site)
-#dat_modified$`{sw_1=F,sw_2=R}` <- as.numeric(dat_modified$`{sw_1=F,sw_2=R}`)
-#dat_modified$`{sw_1=F,sw_4=R}` <- as.numeric(dat_modified$`{sw_1=F,sw_4=R}`)
-#dat_modified$`{sw_1=F,sw_7=S}` <- as.numeric(dat_modified$`{sw_1=F,sw_7=S}`)
-#dat_modified$`{sw_2=R,sw_4=R}` <- as.numeric(dat_modified$`{sw_2=R,sw_4=R}`)
-#dat_modified$`{sw_2=R,sw_7=S}` <- as.numeric(dat_modified$`{sw_2=R,sw_7=S}`)
-#dat_modified$`{sw_4=R,sw_7=S}` <- as.numeric(dat_modified$`{sw_4=R,sw_7=S}`)
-#dat_modified$`{sw_7=S,sw_8=P}` <- as.numeric(dat_modified$`{sw_7=S,sw_8=P}`)
 
 # Get idx for positive and negative labels
 # ========================================
@@ -313,5 +270,216 @@ get_prediction <- function(
 
 }
 
+#######################################
+### Models used in final prediction ###
+#######################################
 
+######################################
+### Models used for Akt prediction ###
+######################################
+
+generate_akt_prob <- function(){ 
+  
+  kinase_count <- floor(length(kinases[['Akt']][['positive-idx']]))
+  
+  # Model 1: XGB
+  model1 <- get_prediction(
+    kinase = 'Akt',
+    kinases = kinases,
+    full_dataset = full_data[, features$temporal],
+    test_idx = 1,
+    ensemble_size = 50,
+    negative_size = kinase_count * 1,
+    model_type = 'xgb',
+    xgb_rounds = 10,
+    xgb_depth = 2,
+    estimate_c = TRUE
+  )$prediction_full
+  
+  # Model 2: Random Forest
+  model2 <- get_prediction(
+    kinase = 'Akt',
+    kinases = kinases,
+    full_dataset = full_data[, features$final],
+    test_idx = 1,
+    ensemble_size = 100,
+    negative_size = kinase_count * 1,
+    model_type = 'rf',
+    rf_ntree = 500,
+    rf_nodesize = 4,
+    estimate_c = TRUE
+  )$prediction_full
+  
+  # Model 3: SVM (Radial Kernel)
+  model3 <- get_prediction(
+    kinase = 'Akt',
+    kinases = kinases,
+    full_dataset = full_data[, features$relative],
+    test_idx = 1,
+    ensemble_size = 100,
+    negative_size = kinase_count * 1,
+    model_type = 'svm',
+    svm_kernel =  'radial',
+    svm_cost = 1,
+    estimate_c = TRUE
+  )$prediction_full
+  
+  # Model 4: Generalised Linear Model
+  model4 <- get_prediction(
+    kinase = 'Akt',
+    kinases = kinases,
+    full_dataset = full_data[, features$temporal],
+    test_idx = 1,
+    ensemble_size = 75,
+    negative_size = kinase_count * 1.1,
+    model_type = 'glm',
+    glm_family = 'gaussian',
+    glm_alpha = 1,
+    estimate_c = FALSE
+  )$prediction_full
+  
+  # Model 5: Random Forest (Motif classifier)
+  model5 <- get_prediction(
+    kinase = 'Akt',
+    kinases = kinases,
+    full_dataset = full_data[, features$sequence],
+    test_idx = 1,
+    ensemble_size = 25,
+    negative_size = kinase_count * 1,
+    model_type = 'rf',
+    rf_ntree = 750,
+    rf_nodesize = 4,
+    estimate_c = TRUE
+  )$prediction_full
+  
+  # Create ensemble of individual Akt models
+  
+  all_predictions <- cbind(model1, model2, model3, model4, model5)
+  
+  prediction_threshold <- 0.8
+  
+  # Three voting options: majority vote, all vote and average vote by prediction threshold
+  
+  ensemble_probability <- rowSums(all_predictions) / ncol(all_predictions)
+  ensemble_yes_vote <- apply(all_predictions, 1, function(x) sum(x > prediction_threshold))
+  ensemble_no_vote <- apply(all_predictions, 1, function(x) sum(x <= prediction_threshold))
+  probability_decision <- ifelse(ensemble_probability > prediction_threshold, 1, 0)
+  majority_decision <- ifelse(ensemble_yes_vote > ensemble_no_vote, 1, 0)
+  all_decision <- ifelse(ensemble_yes_vote == ncol(all_predictions), 1, 0)
+  
+  akt_prob <- cbind(all_predictions, ensemble_yes_vote, ensemble_no_vote, ensemble_probability, probability_decision, majority_decision, all_decision)
+  
+  return(akt_prob)
+}
+
+#######################################
+### Models used for mTOR prediction ###
+#######################################
+
+generate_mtor_prob <- function(){
+  
+  kinase_count <- floor(length(kinases[['mTOR']][['positive-idx']]))
+  
+  # Model 1: XGB
+  model1 <- get_prediction(
+    kinase = 'mTOR',
+    kinases = kinases,
+    full_dataset = full_data[, features$relative],
+    test_idx = 1,
+    ensemble_size = 50,
+    negative_size = kinase_count * 1.2,
+    model_type = 'xgb',
+    xgb_rounds = 50,
+    xgb_depth = 2,
+    estimate_c = FALSE
+  )$prediction_full
+  
+  # Model 2: Random Forest
+  model2 <- get_prediction(
+    kinase = 'mTOR',
+    kinases = kinases,
+    full_dataset = full_data[, features$final],
+    test_idx = 1,
+    ensemble_size = 25,
+    negative_size = kinase_count * 1,
+    model_type = 'rf',
+    rf_ntree = 750,
+    rf_nodesize = 4,
+    estimate_c = TRUE
+  )$prediction_full
+  
+  # Model 3: Support Vector Machine
+  model3 <- get_prediction(
+    kinase = 'mTOR',
+    kinases = kinases,
+    full_dataset = full_data[, features$relative],
+    test_idx = 1,
+    ensemble_size = 100,
+    negative_size = kinase_count * 1,
+    model_type = 'svm',
+    svm_kernel =  'radial',
+    svm_cost = 1,
+    estimate_c = TRUE
+  )$prediction_full
+  
+  # Model 4: Generalised Linear Model (Lasso)
+  model4 <- get_prediction(
+    kinase = 'mTOR',
+    kinases = kinases,
+    full_dataset = full_data[, features$temporal],
+    test_idx = 1,
+    ensemble_size = 100,
+    negative_size = kinase_count * 1.1,
+    model_type = 'glm',
+    glm_family = 'binomial',
+    glm_alpha = 1,
+    estimate_c = FALSE
+  )$prediction_full
+  
+  # Model 5: Random Forest (Motif classifier)
+  model5 <- get_prediction(
+    kinase = 'mTOR',
+    kinases = kinases,
+    full_dataset = full_data[, features$sequence],
+    test_idx = 1,
+    ensemble_size = 25,
+    negative_size = kinase_count * 1,
+    model_type = 'rf',
+    rf_ntree = 500,
+    rf_nodesize = 4,
+    estimate_c = TRUE
+  )$prediction_full
+  
+  # Create ensemble of individual mTOR models
+  
+  all_predictions <- cbind(model1, model2, model3, model4, model5)
+  
+  prediction_threshold <- 0.7
+  
+  # Three voting options: majority vote, all vote and average vote by prediction threshold
+  
+  ensemble_probability <- rowSums(all_predictions) / ncol(all_predictions)
+  ensemble_yes_vote <- apply(all_predictions, 1, function(x) sum(x > prediction_threshold))
+  ensemble_no_vote <- apply(all_predictions, 1, function(x) sum(x <= prediction_threshold))
+  probability_decision <- ifelse(ensemble_probability > prediction_threshold, 1, 0)
+  majority_decision <- ifelse(ensemble_yes_vote > ensemble_no_vote, 1, 0)
+  all_decision <- ifelse(ensemble_yes_vote == ncol(all_predictions), 1, 0)
+  
+  mtor_prob <- cbind(all_predictions, ensemble_yes_vote, ensemble_no_vote, ensemble_probability, probability_decision, majority_decision, all_decision)
+  
+  return(mtor_prob)
+  
+}
+
+# Create single probability file
+
+generate_all_prob <- function(akt_prob, mtor_prob){
+  
+  all_prob <- cbind(full_data[, c('Identifier', 'Seq.Window', 'substrate_type')], akt_prob[,'ensemble_probability'], mtor_prob[,'ensemble_probability'])
+  
+  colnames(all_prob) <- c('Identifier', 'Seq.Window', 'substrate_type', 'akt$prediction_full', 'mtor$prediction_full')
+  
+  return(all_prob)
+  
+}
 
